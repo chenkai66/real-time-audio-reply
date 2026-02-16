@@ -14,6 +14,18 @@ from backend.core.role import Role, role_identifier
 from backend.core.conversation import conversation_history
 from backend.core.generator import reply_generator
 from backend.utils.audio import audio_processor
+from backend.utils.logger import setup_logging, get_logger
+from backend.utils.middleware import RequestTracingMiddleware, ErrorHandlingMiddleware, RateLimitMiddleware
+from backend.utils.metrics import global_metrics, Timer
+from backend.utils.cache import global_cache
+
+# 配置日志
+setup_logging(
+    level="INFO" if settings.debug else "WARNING",
+    structured=True
+)
+
+logger = get_logger(__name__)
 
 app = FastAPI(
     title="实时语音识别与智能回复系统",
@@ -29,6 +41,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 添加中间件
+app.add_middleware(RequestTracingMiddleware)
+app.add_middleware(ErrorHandlingMiddleware)
+app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60)
 
 
 class ConnectionManager:
@@ -85,18 +102,24 @@ async def health_check():
 @app.get("/api/stats")
 async def get_stats():
     """获取系统统计信息"""
-    return {
-        "conversation": conversation_history.get_stats(),
-        "connections": len(manager.active_connections)
-    }
+    with Timer(global_metrics, "api.stats.duration"):
+        return {
+            "conversation": conversation_history.get_stats(),
+            "connections": len(manager.active_connections),
+            "cache": global_cache.get_stats(),
+            "metrics": global_metrics.get_all_stats(window_seconds=300)
+        }
 
 
 @app.post("/api/conversation/clear")
 async def clear_conversation():
     """清空对话历史"""
-    conversation_history.clear()
-    role_identifier.clear_role_features()
-    return {"message": "对话历史已清空"}
+    with Timer(global_metrics, "api.clear.duration"):
+        conversation_history.clear()
+        role_identifier.clear_role_features()
+        global_cache.clear()
+        logger.info("对话历史已清空")
+        return {"message": "对话历史已清空"}
 
 
 @app.get("/api/conversation/history")
@@ -112,15 +135,20 @@ async def get_conversation_history():
 @app.post("/api/test/generate")
 async def test_generate(question: str, context: str = None):
     """测试回复生成（用于调试）"""
-    try:
-        reply = await reply_generator.generate(
-            question=question,
-            context=context,
-            conversation_history=conversation_history
-        )
-        return {"reply": reply}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    with Timer(global_metrics, "api.generate.duration"):
+        try:
+            logger.info(f"测试生成回复: {question[:50]}...")
+            reply = await reply_generator.generate(
+                question=question,
+                context=context,
+                conversation_history=conversation_history
+            )
+            global_metrics.record("api.generate.success", 1)
+            return {"reply": reply}
+        except Exception as e:
+            global_metrics.record("api.generate.error", 1)
+            logger.error(f"生成回复失败: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.websocket("/ws/audio")
