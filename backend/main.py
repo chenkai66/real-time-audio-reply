@@ -15,6 +15,8 @@ from backend.core.conversation import conversation_history
 from backend.core.generator import reply_generator
 from backend.core.exporter import ConversationExporter
 from backend.core.analyzer import ConversationAnalyzer, smart_reminder
+from backend.core.settings_manager import settings_manager
+from backend.core.session_history import session_history
 from backend.utils.audio import audio_processor
 from backend.utils.logger import setup_logging, get_logger
 from backend.utils.middleware import RequestTracingMiddleware, ErrorHandlingMiddleware, RateLimitMiddleware
@@ -259,6 +261,181 @@ async def get_unanswered_questions():
     return {
         "questions": smart_reminder.get_unanswered_questions()
     }
+
+
+# ==================== 个性化设置 API ====================
+
+@app.get("/api/settings")
+async def get_settings():
+    """获取所有设置"""
+    return settings_manager.get_all()
+
+
+@app.get("/api/settings/{key}")
+async def get_setting(key: str):
+    """获取指定设置"""
+    value = settings_manager.get(key)
+    if value is None:
+        raise HTTPException(status_code=404, detail="设置不存在")
+    return {"key": key, "value": value}
+
+
+@app.post("/api/settings/{key}")
+async def update_setting(key: str, value: dict):
+    """更新设置"""
+    settings_manager.set(key, value.get("value"))
+    return {"message": f"设置 {key} 已更新"}
+
+
+@app.post("/api/settings/reset")
+async def reset_settings():
+    """重置所有设置"""
+    settings_manager.reset()
+    return {"message": "设置已重置为默认值"}
+
+
+# 快捷回复
+@app.get("/api/quick-replies")
+async def get_quick_replies():
+    """获取快捷回复列表"""
+    return {"replies": settings_manager.get_quick_replies()}
+
+
+@app.post("/api/quick-replies")
+async def add_quick_reply(text: str):
+    """添加快捷回复"""
+    settings_manager.add_quick_reply(text)
+    return {"message": f"已添加快捷回复: {text}"}
+
+
+@app.delete("/api/quick-replies")
+async def remove_quick_reply(text: str):
+    """删除快捷回复"""
+    settings_manager.remove_quick_reply(text)
+    return {"message": f"已删除快捷回复: {text}"}
+
+
+# 学生管理
+@app.get("/api/students")
+async def get_students():
+    """获取学生列表"""
+    return {"students": settings_manager.get_students()}
+
+
+@app.post("/api/students")
+async def add_student(name: str, info: dict = None):
+    """添加学生"""
+    settings_manager.add_student(name, info)
+    return {"message": f"已添加学生: {name}"}
+
+
+@app.delete("/api/students/{name}")
+async def remove_student(name: str):
+    """删除学生"""
+    settings_manager.remove_student(name)
+    return {"message": f"已删除学生: {name}"}
+
+
+# Prompt 模板
+@app.get("/api/prompt/current")
+async def get_current_prompt():
+    """获取当前 Prompt 模板"""
+    return {
+        "style": settings_manager.get("reply_style"),
+        "prompt": settings_manager.get_current_prompt()
+    }
+
+
+@app.post("/api/prompt/custom")
+async def set_custom_prompt(style: str, prompt: str):
+    """设置自定义 Prompt"""
+    settings_manager.set_custom_prompt(style, prompt)
+    return {"message": f"已设置 {style} 风格的 Prompt"}
+
+
+# ==================== 课堂会话管理 API ====================
+
+@app.post("/api/session/start")
+async def start_session(topic: str = ""):
+    """开始新的课堂会话"""
+    session = session_history.start_session(topic)
+    return {
+        "message": "课堂会话已开始",
+        "session": session.to_dict()
+    }
+
+
+@app.post("/api/session/end")
+async def end_session():
+    """结束当前课堂会话"""
+    if not session_history.current_session:
+        raise HTTPException(status_code=400, detail="没有进行中的会话")
+    
+    session_history.end_session(conversation_history)
+    return {"message": "课堂会话已结束"}
+
+
+@app.get("/api/session/current")
+async def get_current_session():
+    """获取当前会话信息"""
+    if not session_history.current_session:
+        return {"session": None}
+    
+    return {"session": session_history.current_session.to_dict()}
+
+
+@app.get("/api/session/{session_id}")
+async def get_session(session_id: str):
+    """获取指定会话"""
+    session = session_history.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    
+    return {"session": session.to_dict()}
+
+
+@app.get("/api/sessions/recent")
+async def get_recent_sessions(days: int = 7):
+    """获取最近的会话"""
+    sessions = session_history.get_recent_sessions(days)
+    return {
+        "sessions": [s.to_dict() for s in sessions],
+        "count": len(sessions)
+    }
+
+
+@app.get("/api/sessions/all")
+async def get_all_sessions():
+    """获取所有会话"""
+    sessions = session_history.get_all_sessions()
+    return {
+        "sessions": [s.to_dict() for s in sessions],
+        "count": len(sessions)
+    }
+
+
+@app.get("/api/sessions/statistics")
+async def get_session_statistics(days: int = 30):
+    """获取会话统计数据"""
+    stats = session_history.get_statistics(days)
+    return stats
+
+
+@app.get("/api/sessions/compare")
+async def compare_sessions(session_id1: str, session_id2: str):
+    """对比两个会话"""
+    comparison = session_history.compare_sessions(session_id1, session_id2)
+    if not comparison:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    
+    return comparison
+
+
+@app.post("/api/session/{session_id}/note")
+async def add_session_note(session_id: str, note: str):
+    """为会话添加备注"""
+    session_history.add_note(session_id, note)
+    return {"message": "备注已添加"}
 
 
 @app.post("/api/test/generate")
