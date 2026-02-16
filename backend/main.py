@@ -13,6 +13,8 @@ from config.settings import settings
 from backend.core.role import Role, role_identifier
 from backend.core.conversation import conversation_history
 from backend.core.generator import reply_generator
+from backend.core.exporter import ConversationExporter
+from backend.core.analyzer import ConversationAnalyzer, smart_reminder
 from backend.utils.audio import audio_processor
 from backend.utils.logger import setup_logging, get_logger
 from backend.utils.middleware import RequestTracingMiddleware, ErrorHandlingMiddleware, RateLimitMiddleware
@@ -129,6 +131,133 @@ async def get_conversation_history():
         "l1_cache": [turn.to_dict() for turn in conversation_history.l1_cache],
         "l2_cache": [summary.to_dict() for summary in conversation_history.l2_cache],
         "stats": conversation_history.get_stats()
+    }
+
+
+@app.get("/api/export/{format}")
+async def export_conversation(format: str):
+    """
+    导出对话历史
+    
+    Args:
+        format: 导出格式 (json/txt/markdown/html)
+    """
+    exporter = ConversationExporter(conversation_history)
+    
+    if format == "json":
+        content = exporter.export_to_json()
+        media_type = "application/json"
+        filename = f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    elif format == "txt":
+        content = exporter.export_to_txt()
+        media_type = "text/plain"
+        filename = f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    elif format == "markdown":
+        content = exporter.export_to_markdown()
+        media_type = "text/markdown"
+        filename = f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    elif format == "html":
+        content = exporter.export_to_html()
+        media_type = "text/html"
+        filename = f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    else:
+        raise HTTPException(status_code=400, detail="不支持的格式")
+    
+    from fastapi.responses import Response
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@app.get("/api/search")
+async def search_conversations(keyword: str, case_sensitive: bool = False):
+    """
+    搜索对话
+    
+    Args:
+        keyword: 搜索关键词
+        case_sensitive: 是否区分大小写
+    """
+    exporter = ConversationExporter(conversation_history)
+    results = exporter.search_conversations(keyword, case_sensitive)
+    
+    return {
+        "keyword": keyword,
+        "count": len(results),
+        "results": [turn.to_dict() for turn in results]
+    }
+
+
+@app.get("/api/analysis/participation")
+async def analyze_participation():
+    """分析参与度"""
+    analyzer = ConversationAnalyzer(conversation_history)
+    return analyzer.analyze_participation()
+
+
+@app.get("/api/analysis/questions")
+async def analyze_questions():
+    """分析学生提问"""
+    analyzer = ConversationAnalyzer(conversation_history)
+    return analyzer.analyze_questions()
+
+
+@app.get("/api/analysis/keywords")
+async def analyze_keywords(top_n: int = 10):
+    """
+    分析高频关键词
+    
+    Args:
+        top_n: 返回前 N 个关键词
+    """
+    analyzer = ConversationAnalyzer(conversation_history)
+    keywords = analyzer.analyze_keywords(top_n)
+    
+    return {
+        "keywords": [{"word": word, "count": count} for word, count in keywords]
+    }
+
+
+@app.get("/api/analysis/quality")
+async def analyze_quality():
+    """分析互动质量"""
+    analyzer = ConversationAnalyzer(conversation_history)
+    return analyzer.analyze_interaction_quality()
+
+
+@app.get("/api/analysis/report")
+async def generate_report():
+    """生成课堂分析报告"""
+    analyzer = ConversationAnalyzer(conversation_history)
+    report = analyzer.generate_summary_report()
+    
+    return {
+        "report": report,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.post("/api/reminder/keyword")
+async def add_reminder_keyword(keyword: str):
+    """添加提醒关键词"""
+    smart_reminder.add_keyword(keyword)
+    return {"message": f"已添加关键词: {keyword}"}
+
+
+@app.delete("/api/reminder/keyword")
+async def remove_reminder_keyword(keyword: str):
+    """移除提醒关键词"""
+    smart_reminder.remove_keyword(keyword)
+    return {"message": f"已移除关键词: {keyword}"}
+
+
+@app.get("/api/reminder/unanswered")
+async def get_unanswered_questions():
+    """获取未回答的问题"""
+    return {
+        "questions": smart_reminder.get_unanswered_questions()
     }
 
 
