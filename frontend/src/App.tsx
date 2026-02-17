@@ -6,14 +6,17 @@ import { ConversationPanel, Message } from './components/ConversationPanel';
 import { ControlPanel } from './components/ControlPanel';
 import { StatsDisplay } from './components/StatsDisplay';
 import { StatusIndicator, Status } from './components/StatusIndicator';
-import { useWebSocket } from './hooks/useWebSocket';
 import { apiService } from './services/api';
+import { audioCaptureService, AudioSource } from './services/audioCapture';
+import { wsService } from './services/websocket';
 
 function App() {
   const [isListening, setIsListening] = useState(false);
   const [status, setStatus] = useState<Status>('idle');
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [isConnected, setIsConnected] = useState(false);
+  const [audioSource, setAudioSource] = useState<AudioSource>('microphone');
   const [stats, setStats] = useState({
     total_turns: 0,
     total_tokens: 0,
@@ -23,65 +26,69 @@ function App() {
     l2_tokens: 0,
   });
 
-  const { isConnected, messages: wsMessages, sendTranscript } = useWebSocket();
-
-  // 处理 WebSocket 消息
+  // 初始化 WebSocket 连接
   useEffect(() => {
-    if (wsMessages.length === 0) return;
-
-    const lastMessage = wsMessages[wsMessages.length - 1];
-
-    switch (lastMessage.type) {
-      case 'connected':
+    const initWebSocket = async () => {
+      try {
+        await wsService.connect();
+        setIsConnected(true);
         setStatusMessage('已连接到服务器');
-        break;
 
-      case 'status':
-        if (lastMessage.status === 'processing') {
-          setStatus('processing');
-          setStatusMessage('正在识别角色...');
-        } else if (lastMessage.status === 'generating') {
-          setStatus('generating');
-          setStatusMessage('正在生成回复...');
-        }
-        break;
-
-      case 'role_identified':
-        const newMessage: Message = {
-          id: Date.now().toString(),
-          role: lastMessage.role,
-          text: lastMessage.text,
-          timestamp: lastMessage.timestamp,
-        };
-        setMessages(prev => [...prev, newMessage]);
-        setStatus(isListening ? 'listening' : 'idle');
-        break;
-
-      case 'reply':
-        const replyMessage: Message = {
-          id: Date.now().toString(),
-          role: 'system',
-          text: lastMessage.text,
-          timestamp: lastMessage.timestamp,
-        };
-        setMessages(prev => [...prev, replyMessage]);
-        setStatus(isListening ? 'listening' : 'idle');
-        setStatusMessage('回复已生成');
-        break;
-
-      case 'stats':
-        setStats(lastMessage.data);
-        break;
-
-      case 'error':
-        setStatus('error');
-        setStatusMessage(lastMessage.message);
-        setTimeout(() => {
+        // 注册消息处理器
+        wsService.on('transcript', (message) => {
+          const newMessage: Message = {
+            id: Date.now().toString(),
+            role: message.role || 'student',
+            text: message.text || '',
+            timestamp: message.timestamp || new Date().toISOString(),
+          };
+          setMessages(prev => [...prev, newMessage]);
           setStatus(isListening ? 'listening' : 'idle');
-        }, 3000);
-        break;
-    }
-  }, [wsMessages, isListening]);
+        });
+
+        wsService.on('reply', (message) => {
+          const replyMessage: Message = {
+            id: Date.now().toString(),
+            role: 'system',
+            text: message.text || '',
+            timestamp: message.timestamp || new Date().toISOString(),
+          };
+          setMessages(prev => [...prev, replyMessage]);
+          setStatus(isListening ? 'listening' : 'idle');
+          setStatusMessage('回复已生成');
+        });
+
+        wsService.on('status', (message) => {
+          if (message.status === 'processing') {
+            setStatus('processing');
+            setStatusMessage('正在识别角色...');
+          } else if (message.status === 'generating') {
+            setStatus('generating');
+            setStatusMessage('正在生成回复...');
+          }
+        });
+
+        wsService.on('error', (message) => {
+          setStatus('error');
+          setStatusMessage(message.message || '发生错误');
+          setTimeout(() => {
+            setStatus(isListening ? 'listening' : 'idle');
+          }, 3000);
+        });
+
+      } catch (error) {
+        console.error('WebSocket 连接失败:', error);
+        setIsConnected(false);
+        setStatusMessage('连接失败');
+      }
+    };
+
+    initWebSocket();
+
+    return () => {
+      wsService.disconnect();
+    };
+  }, []);
 
   // 定期更新统计信息
   useEffect(() => {
@@ -97,12 +104,53 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const handleToggleListening = () => {
-    setIsListening(!isListening);
-    setStatus(!isListening ? 'listening' : 'idle');
-    setStatusMessage(!isListening ? '正在监听...' : '');
+  // 处理开始/停止监听
+  const handleToggleListening = async () => {
+    if (!isListening) {
+      // 开始监听
+      try {
+        // 检查浏览器支持
+        if (!audioCaptureService.constructor.isSupported()) {
+          setStatus('error');
+          setStatusMessage('浏览器不支持音频采集');
+          return;
+        }
+
+        // 检查 WebSocket 连接
+        if (!wsService.isConnected()) {
+          setStatusMessage('正在连接服务器...');
+          await wsService.connect();
+        }
+
+        setStatus('listening');
+        setStatusMessage('正在启动音频采集...');
+
+        // 开始音频采集
+        await audioCaptureService.startCapture(audioSource, (audioData) => {
+          // 发送音频数据到后端
+          wsService.sendAudio(audioData);
+        });
+
+        setIsListening(true);
+        setStatusMessage('正在监听...');
+        console.log('✅ 开始监听');
+      } catch (error) {
+        console.error('启动监听失败:', error);
+        setStatus('error');
+        setStatusMessage(error instanceof Error ? error.message : '启动失败');
+        setTimeout(() => setStatus('idle'), 3000);
+      }
+    } else {
+      // 停止监听
+      audioCaptureService.stopCapture();
+      setIsListening(false);
+      setStatus('idle');
+      setStatusMessage('');
+      console.log('✅ 停止监听');
+    }
   };
 
+  // 清空对话
   const handleClear = async () => {
     try {
       await apiService.clearConversation();
@@ -123,7 +171,17 @@ function App() {
     }
   };
 
-  // 模拟测试功能
+  // 切换音频源
+  const handleAudioSourceChange = (source: AudioSource) => {
+    if (isListening) {
+      setStatusMessage('请先停止监听');
+      return;
+    }
+    setAudioSource(source);
+    setStatusMessage(`已切换到: ${source === 'microphone' ? '麦克风' : source === 'system' ? '系统音频' : '麦克风+系统音频'}`);
+  };
+
+  // 测试功能
   const handleTest = () => {
     const testMessages = [
       { role: 'teacher' as const, text: '今天我们学习 Python 的基础语法' },
@@ -133,7 +191,7 @@ function App() {
 
     testMessages.forEach((msg, index) => {
       setTimeout(() => {
-        sendTranscript(msg.text, true);
+        wsService.sendText(msg.text, msg.role);
       }, index * 2000);
     });
   };
@@ -203,6 +261,51 @@ function App() {
               onToggleListening={handleToggleListening}
               onClear={handleClear}
             />
+
+            {/* 音频源选择 */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="card p-4"
+            >
+              <h3 className="text-sm font-semibold text-gray-300 mb-3">音频源</h3>
+              <div className="space-y-2">
+                <button
+                  onClick={() => handleAudioSourceChange('microphone')}
+                  disabled={isListening}
+                  className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${
+                    audioSource === 'microphone'
+                      ? 'bg-primary-500 text-white'
+                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                  } ${isListening ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  🎤 麦克风
+                </button>
+                <button
+                  onClick={() => handleAudioSourceChange('system')}
+                  disabled={isListening}
+                  className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${
+                    audioSource === 'system'
+                      ? 'bg-primary-500 text-white'
+                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                  } ${isListening ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  🔊 系统音频
+                </button>
+                <button
+                  onClick={() => handleAudioSourceChange('both')}
+                  disabled={isListening}
+                  className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${
+                    audioSource === 'both'
+                      ? 'bg-primary-500 text-white'
+                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                  } ${isListening ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  🎧 麦克风 + 系统音频
+                </button>
+              </div>
+            </motion.div>
+
             <StatsDisplay stats={stats} />
 
             {/* 测试按钮 */}

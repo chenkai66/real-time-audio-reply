@@ -22,6 +22,7 @@ from backend.utils.logger import setup_logging, get_logger
 from backend.utils.middleware import RequestTracingMiddleware, ErrorHandlingMiddleware, RateLimitMiddleware
 from backend.utils.metrics import global_metrics, Timer
 from backend.utils.cache import global_cache
+from backend.websocket import router as websocket_router
 
 # 配置日志
 setup_logging(
@@ -50,6 +51,9 @@ app.add_middleware(
 app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(ErrorHandlingMiddleware)
 app.add_middleware(RateLimitMiddleware, max_requests=100, window_seconds=60)
+
+# 注册 WebSocket 路由
+app.include_router(websocket_router)
 
 
 class ConnectionManager:
