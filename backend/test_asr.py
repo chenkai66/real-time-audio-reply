@@ -4,9 +4,15 @@
 import asyncio
 import sys
 import os
+from pathlib import Path
 
 # 添加项目路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+# 加载 .env 文件
+from dotenv import load_dotenv
+load_dotenv(project_root / ".env")
 
 from backend.services.asr_service import DashScopeASR
 import numpy as np

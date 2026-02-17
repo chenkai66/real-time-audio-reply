@@ -68,10 +68,9 @@ echo ""
 
 # 启动后端
 echo "📦 启动后端服务..."
-cd backend
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 > /dev/null 2>&1 &
+cd "/Users/kchen/Desktop/Project/Real Time Audio"
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000 > /dev/null 2>&1 &
 BACKEND_PID=$!
-cd ..
 
 # 等待后端启动
 echo "⏳ 等待后端启动..."

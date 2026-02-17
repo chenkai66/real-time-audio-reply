@@ -48,11 +48,11 @@ class DashScopeASR:
         try:
             logger.info(f"正在连接 DashScope ASR: {self.model}")
             
-            # 建立连接
+            # 建立连接（使用正确的认证头）
             self.ws = await websockets.connect(
                 self.url,
                 extra_headers={
-                    "Authorization": f"Bearer {self.api_key}"
+                    "X-DashScope-ApiKey": self.api_key
                 },
                 ping_interval=30,
                 ping_timeout=10
