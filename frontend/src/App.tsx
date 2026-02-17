@@ -46,6 +46,11 @@ function App() {
           setStatus(isListening ? 'listening' : 'idle');
         });
 
+        wsService.on('transcript_partial', (message) => {
+          // 中间识别结果，显示在状态栏
+          setStatusMessage(`识别中: ${message.text}`);
+        });
+
         wsService.on('reply', (message) => {
           const replyMessage: Message = {
             id: Date.now().toString(),
@@ -125,6 +130,9 @@ function App() {
         setStatus('listening');
         setStatusMessage('正在启动音频采集...');
 
+        // 通知后端开始监听
+        wsService.send({ type: 'start_listening' });
+
         // 开始音频采集
         await audioCaptureService.startCapture(audioSource, (audioData) => {
           // 发送音频数据到后端
@@ -142,7 +150,13 @@ function App() {
       }
     } else {
       // 停止监听
+      
+      // 通知后端停止监听
+      wsService.send({ type: 'stop_listening' });
+      
+      // 停止音频采集
       audioCaptureService.stopCapture();
+      
       setIsListening(false);
       setStatus('idle');
       setStatusMessage('');
