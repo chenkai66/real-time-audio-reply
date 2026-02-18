@@ -17,6 +17,10 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
     """请求追踪中间件"""
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # 跳过 WebSocket 连接
+        if request.url.path.startswith("/ws"):
+            return await call_next(request)
+        
         # 生成追踪 ID
         trace_id = str(uuid.uuid4())
         request.state.trace_id = trace_id
@@ -61,6 +65,10 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
     """统一错误处理中间件"""
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # 跳过 WebSocket 连接
+        if request.url.path.startswith("/ws"):
+            return await call_next(request)
+        
         try:
             return await call_next(request)
         
@@ -108,6 +116,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.requests = {}  # {ip: [(timestamp, count)]}
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # 跳过 WebSocket 连接
+        if request.url.path.startswith("/ws"):
+            return await call_next(request)
+        
         # 获取客户端 IP
         client_ip = request.client.host if request.client else "unknown"
         
