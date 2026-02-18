@@ -35,6 +35,12 @@ function App() {
         setStatusMessage('已连接到服务器');
 
         // 注册消息处理器
+        wsService.on('connected', (message) => {
+          console.log('✅ 服务器确认连接');
+          setIsConnected(true);
+          setStatusMessage('已连接到服务器');
+        });
+
         wsService.on('transcript', (message) => {
           const newMessage: Message = {
             id: Date.now().toString(),
@@ -80,6 +86,17 @@ function App() {
             setStatus(isListening ? 'listening' : 'idle');
           }, 3000);
         });
+
+        // 定期检查连接状态
+        const checkConnection = setInterval(() => {
+          const connected = wsService.isConnected();
+          if (connected !== isConnected) {
+            setIsConnected(connected);
+            setStatusMessage(connected ? '已连接到服务器' : '连接已断开');
+          }
+        }, 1000);
+
+        return () => clearInterval(checkConnection);
 
       } catch (error) {
         console.error('WebSocket 连接失败:', error);
