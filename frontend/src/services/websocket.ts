@@ -39,7 +39,8 @@ export class WebSocketService {
       }
 
       this.isConnecting = true;
-      const url = `ws://localhost:8000/ws/${userId}`;
+      // 使用 /ws/audio 端点（后端实际的 WebSocket 路由）
+      const url = `ws://localhost:8000/ws/audio`;
       
       try {
         this.ws = new WebSocket(url);
