@@ -22,6 +22,7 @@ from backend.utils.logger import setup_logging, get_logger
 from backend.utils.middleware import RequestTracingMiddleware, ErrorHandlingMiddleware, RateLimitMiddleware
 from backend.utils.metrics import global_metrics, Timer
 from backend.utils.cache import global_cache
+from backend.services.asr_service import DashScopeASR
 
 # 配置日志
 setup_logging(
@@ -463,6 +464,8 @@ async def websocket_audio_endpoint(websocket: WebSocket):
     音频 WebSocket 端点
     接收音频数据和转写文本，返回识别结果和回复
     """
+    asr = None  # ASR 服务实例
+    
     try:
         await manager.connect(websocket)
         logger.info("WebSocket 连接已建立")
@@ -486,25 +489,88 @@ async def websocket_audio_endpoint(websocket: WebSocket):
                 await handle_transcript(websocket, data)
             
             elif message_type == "audio":
-                # 收到音频数据（暂时不处理，后续可用于声纹识别）
-                pass
+                # 收到音频数据 - 转发给 ASR
+                if asr and asr.is_connected:
+                    audio_data = data.get("data", [])
+                    # 将数组转换为 bytes
+                    import struct
+                    audio_bytes = struct.pack(f'{len(audio_data)}h', *audio_data)
+                    await asr.send_audio(audio_bytes)
+                else:
+                    logger.warning("ASR 未连接，无法发送音频")
             
             elif message_type == "start_listening":
-                # 开始监听
-                logger.info("开始监听音频")
-                await websocket.send_json({
-                    "type": "status",
-                    "status": "listening",
-                    "message": "开始监听"
-                })
+                # 开始监听 - 启动 ASR 连接
+                logger.info("开始监听音频，启动 ASR 服务")
+                
+                try:
+                    # 创建 ASR 实例
+                    asr = DashScopeASR()
+                    
+                    # 设置回调
+                    async def on_result(result):
+                        text = result.get("text", "")
+                        is_final = result.get("is_final", False)
+                        
+                        if text:
+                            # 发送识别结果到前端
+                            await websocket.send_json({
+                                "type": "transcript",
+                                "text": text,
+                                "is_final": is_final,
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
+                            # 如果是最终结果，处理转写文本
+                            if is_final:
+                                await handle_transcript(websocket, {
+                                    "text": text,
+                                    "is_final": True
+                                })
+                    
+                    async def on_error(error):
+                        logger.error(f"ASR 错误: {error}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"语音识别错误: {error}"
+                        })
+                    
+                    asr.on_result = on_result
+                    asr.on_error = on_error
+                    
+                    # 连接并开始识别
+                    await asr.connect()
+                    await asr.start_recognition(sample_rate=16000)
+                    
+                    await websocket.send_json({
+                        "type": "status",
+                        "status": "listening",
+                        "message": "ASR 服务已启动"
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"启动 ASR 失败: {e}", exc_info=True)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"启动语音识别失败: {str(e)}"
+                    })
             
             elif message_type == "stop_listening":
-                # 停止监听
-                logger.info("停止监听音频")
+                # 停止监听 - 停止 ASR
+                logger.info("停止监听音频，关闭 ASR 服务")
+                
+                if asr:
+                    try:
+                        await asr.stop_recognition()
+                        await asr.disconnect()
+                        asr = None
+                    except Exception as e:
+                        logger.error(f"停止 ASR 失败: {e}")
+                
                 await websocket.send_json({
                     "type": "status",
                     "status": "stopped",
-                    "message": "停止监听"
+                    "message": "已停止监听"
                 })
             
             elif message_type == "ping":
@@ -518,11 +584,26 @@ async def websocket_audio_endpoint(websocket: WebSocket):
                 })
     
     except WebSocketDisconnect:
+        # 清理 ASR 连接
+        if asr:
+            try:
+                await asr.disconnect()
+            except:
+                pass
+        
         manager.disconnect(websocket)
         logger.info("WebSocket 连接断开")
     
     except Exception as e:
         logger.error(f"WebSocket 错误: {e}", exc_info=True)
+        
+        # 清理 ASR 连接
+        if asr:
+            try:
+                await asr.disconnect()
+            except:
+                pass
+        
         manager.disconnect(websocket)
         try:
             await websocket.send_json({
