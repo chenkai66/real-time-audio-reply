@@ -30,10 +30,9 @@ class DashScopeASR:
         self.ws: Optional[WebSocketClientProtocol] = None
         self.is_connected = False
         
-        # 配置
-        self.url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
-        self.model = "paraformer-realtime-v2"  # 高准确率模型
-        # self.model = "fun-asr-realtime"  # 低延迟模型（可选）
+        # 配置（使用 Realtime API）
+        self.url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+        self.model = "qwen3-asr-flash-realtime"  # 千问实时语音识别
         
         # 回调函数
         self.on_result: Optional[Callable] = None
@@ -46,14 +45,14 @@ class DashScopeASR:
     async def connect(self):
         """建立 WebSocket 连接"""
         try:
-            logger.info(f"正在连接 DashScope ASR: {self.model}")
+            logger.info(f"正在连接 DashScope Realtime API: {self.model}")
             
-            # 建立连接（使用正确的认证头）
+            # Realtime API URL 格式：需要同时传递 api_key 和 model
+            url_with_params = f"{self.url}?api_key={self.api_key}&model={self.model}"
+            
+            # 建立连接
             self.ws = await websockets.connect(
-                self.url,
-                extra_headers={
-                    "X-DashScope-ApiKey": self.api_key
-                },
+                url_with_params,
                 ping_interval=30,
                 ping_timeout=10
             )
@@ -71,7 +70,7 @@ class DashScopeASR:
     
     async def start_recognition(self, sample_rate: int = 16000):
         """
-        开始识别
+        开始识别（使用 Realtime API）
         
         Args:
             sample_rate: 采样率（Hz）
@@ -79,34 +78,27 @@ class DashScopeASR:
         if not self.is_connected:
             await self.connect()
         
-        # 发送开始识别消息
-        start_message = {
-            "header": {
-                "action": "start-recognition",
-                "streaming": "duplex",
-                "task_id": None  # 服务器会分配
-            },
-            "payload": {
-                "model": self.model,
-                "parameters": {
-                    "format": "pcm",
-                    "sample_rate": sample_rate,
-                    "enable_vad": True,  # 启用 VAD
-                    "enable_punctuation": True,  # 启用标点
-                    "enable_inverse_text_normalization": True,  # 数字转换
-                    "max_sentence_silence": 800,  # 句子间最大静音（ms）
-                    "enable_intermediate_result": True,  # 启用中间结果
+        # 配置会话（Realtime API 格式）
+        session_config = {
+            "type": "session.update",
+            "session": {
+                "model": self.model,  # 指定模型
+                "modalities": ["text"],  # 只需要文本输出
+                "transcription": {
+                    "language": "zh",  # 中文
+                    "input_audio_format": "pcm",
+                    "input_sample_rate": sample_rate
                 }
             }
         }
         
-        await self.ws.send(json.dumps(start_message))
+        await self.ws.send(json.dumps(session_config))
         self.is_running = True
         logger.info("✅ 开始识别")
     
     async def send_audio(self, audio_data: bytes):
         """
-        发送音频数据
+        发送音频数据（Realtime API 格式）
         
         Args:
             audio_data: PCM 音频数据（16-bit）
@@ -116,8 +108,17 @@ class DashScopeASR:
             return
         
         try:
-            # 发送音频数据（二进制）
-            await self.ws.send(audio_data)
+            # Realtime API 需要 base64 编码
+            import base64
+            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+            
+            # 发送音频数据
+            audio_message = {
+                "type": "input_audio_buffer.append",
+                "audio": audio_b64
+            }
+            
+            await self.ws.send(json.dumps(audio_message))
         except Exception as e:
             logger.error(f"发送音频失败: {e}")
             if self.on_error:
@@ -128,12 +129,9 @@ class DashScopeASR:
         if not self.is_running:
             return
         
-        # 发送停止消息
+        # 发送结束消息（Realtime API）
         stop_message = {
-            "header": {
-                "action": "stop-recognition",
-                "task_id": self.task_id
-            }
+            "type": "session.finish"
         }
         
         await self.ws.send(json.dumps(stop_message))
@@ -155,59 +153,63 @@ class DashScopeASR:
     
     async def _handle_message(self, message: str):
         """
-        处理接收到的消息
+        处理接收到的消息（Realtime API 格式）
         
         Args:
             message: JSON 消息
         """
         try:
             data = json.loads(message)
-            header = data.get("header", {})
-            payload = data.get("payload", {})
+            event_type = data.get("type")
             
-            # 获取 task_id
-            if not self.task_id and header.get("task_id"):
-                self.task_id = header["task_id"]
-                logger.info(f"Task ID: {self.task_id}")
+            # 处理不同类型的事件
+            if event_type == "session.created":
+                # 会话创建
+                session_id = data.get("session", {}).get("id")
+                logger.info(f"会话创建: {session_id}")
             
-            # 处理不同类型的消息
-            event = header.get("event")
+            elif event_type == "session.updated":
+                # 会话配置更新
+                logger.info("会话配置已更新")
             
-            if event == "recognition-started":
-                logger.info("识别已开始")
+            elif event_type == "input_audio_buffer.speech_started":
+                # VAD 检测到语音开始
+                logger.info("======VAD 检测到语音开始======")
             
-            elif event == "recognition-result-changed":
-                # 中间结果（实时显示）
-                result = payload.get("result", {})
-                text = result.get("text", "")
+            elif event_type == "input_audio_buffer.speech_stopped":
+                # VAD 检测到语音结束
+                logger.info("======VAD 检测到语音结束======")
+            
+            elif event_type == "conversation.item.input_audio_transcription.text":
+                # 中间识别结果
+                text = data.get("text", "")
                 if text and self.on_result:
                     await self.on_result({
                         "text": text,
                         "is_final": False,
-                        "confidence": result.get("confidence", 0)
+                        "confidence": 1.0
                     })
             
-            elif event == "recognition-completed":
-                # 最终结果
-                result = payload.get("result", {})
-                text = result.get("text", "")
+            elif event_type == "conversation.item.input_audio_transcription.completed":
+                # 最终识别结果
+                text = data.get("transcript", "")
                 if text and self.on_result:
                     await self.on_result({
                         "text": text,
                         "is_final": True,
-                        "confidence": result.get("confidence", 0)
+                        "confidence": 1.0
                     })
                 logger.info(f"识别完成: {text}")
             
-            elif event == "error":
+            elif event_type == "error":
                 # 错误
-                error_message = payload.get("message", "未知错误")
+                error_message = data.get("error", {}).get("message", "未知错误")
                 logger.error(f"ASR 错误: {error_message}")
                 if self.on_error:
                     await self.on_error(error_message)
             
             else:
-                logger.debug(f"未处理的事件: {event}")
+                logger.debug(f"未处理的事件: {event_type}")
         
         except Exception as e:
             logger.error(f"处理消息失败: {e}")
