@@ -463,17 +463,22 @@ async def websocket_audio_endpoint(websocket: WebSocket):
     音频 WebSocket 端点
     接收音频数据和转写文本，返回识别结果和回复
     """
-    await manager.connect(websocket)
-    
     try:
+        await manager.connect(websocket)
+        logger.info("WebSocket 连接已建立")
+        
         await websocket.send_json({
             "type": "connected",
             "message": "WebSocket 连接成功"
         })
         
+        logger.info("开始接收消息循环")
+        
         while True:
             # 接收消息
+            logger.debug("等待接收消息...")
             data = await websocket.receive_json()
+            logger.info(f"收到消息: {data}")
             message_type = data.get("type")
             
             if message_type == "transcript":
@@ -483,6 +488,24 @@ async def websocket_audio_endpoint(websocket: WebSocket):
             elif message_type == "audio":
                 # 收到音频数据（暂时不处理，后续可用于声纹识别）
                 pass
+            
+            elif message_type == "start_listening":
+                # 开始监听
+                logger.info("开始监听音频")
+                await websocket.send_json({
+                    "type": "status",
+                    "status": "listening",
+                    "message": "开始监听"
+                })
+            
+            elif message_type == "stop_listening":
+                # 停止监听
+                logger.info("停止监听音频")
+                await websocket.send_json({
+                    "type": "status",
+                    "status": "stopped",
+                    "message": "停止监听"
+                })
             
             elif message_type == "ping":
                 # 心跳
@@ -496,10 +519,10 @@ async def websocket_audio_endpoint(websocket: WebSocket):
     
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        print("WebSocket 连接断开")
+        logger.info("WebSocket 连接断开")
     
     except Exception as e:
-        print(f"WebSocket 错误: {e}")
+        logger.error(f"WebSocket 错误: {e}", exc_info=True)
         manager.disconnect(websocket)
         try:
             await websocket.send_json({
